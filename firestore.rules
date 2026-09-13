@@ -1,0 +1,74 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn()  { return request.auth != null; }
+    function role()        { return request.auth.token.role; }
+    function isTeacher()   { return isSignedIn() && role() == 'teacher'; }
+    function isApproved()  { return isSignedIn() && (role() == 'student' || role() == 'teacher'); }
+    function isOwner(uid)  { return isSignedIn() && request.auth.uid == uid; }
+
+    function q(qid)        { return get(/databases/$(database)/documents/questions/$(qid)).data; }
+    function canSee(d)     { return d.visibility == 'public' || isOwner(d.authorId) || isTeacher(); }
+
+    match /questions/{qid} {
+      allow read: if isApproved() && canSee(resource.data);
+
+      allow create: if isApproved()
+                    && request.resource.data.authorId == request.auth.uid
+                    && request.resource.data.authorGrade == 3
+                    && request.resource.data.authorClass is int
+                    && request.resource.data.authorClass >= 1 && request.resource.data.authorClass <= 12
+                    && request.resource.data.authorNo is int
+                    && request.resource.data.authorNo >= 1 && request.resource.data.authorNo <= 40
+                    && request.resource.data.authorName.size() >= 2
+                    && request.resource.data.authorName.size() <= 10
+                    && request.resource.data.title.size() >= 2
+                    && request.resource.data.body.size() >= 10
+                    && request.resource.data.imagePaths.size() >= 1
+                    && request.resource.data.imagePaths.size() <= 3
+                    && request.resource.data.visibility in ['public', 'private'];
+
+      allow update: if isTeacher()
+                    || (isOwner(resource.data.authorId)
+                        && request.resource.data.authorId == resource.data.authorId);
+
+      allow delete: if isTeacher() || isOwner(resource.data.authorId);
+
+      match /hints/{hid} {
+        allow read:  if isApproved() && canSee(q(qid));
+        allow write: if false;              // 서버 라우트(Admin SDK)만 기록
+      }
+
+      match /answers/{aid} {
+        allow read:   if isApproved() && canSee(q(qid));
+        allow create: if isTeacher() || isOwner(q(qid).authorId);
+        allow update, delete: if isTeacher() || isOwner(resource.data.authorId);
+      }
+    }
+
+    match /users/{uid} {
+      allow read:   if isOwner(uid) || isTeacher();
+      allow update: if isOwner(uid) || isTeacher();
+      allow create: if isOwner(uid);
+      allow delete: if false;
+
+      // NFR-4 일일 AI 호출 카운터. 본인은 남은 횟수를 볼 수 있지만
+      // 쓰기는 서버 라우트(Admin SDK)만 한다. 클라이언트가 늘리거나 지울 수 없다.
+      match /usage/{ymd} {
+        allow read:  if isOwner(uid) || isTeacher();
+        allow write: if false;
+      }
+    }
+
+    match /notifications/{nid} {
+      allow read, update: if isOwner(resource.data.userId);
+      allow write: if false;                // 서버 라우트만 생성
+    }
+
+    match /stats/{doc} {
+      allow read:  if isTeacher();          // 학생은 집계 데이터를 볼 수 없다
+      allow write: if false;
+    }
+  }
+}
