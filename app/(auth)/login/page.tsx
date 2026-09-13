@@ -44,7 +44,9 @@ export default function LoginPage() {
           console.warn('User doc sync error:', dbErr);
         }
 
-        if (role === 'teacher' || role === 'student') {
+        if (role === 'teacher') {
+          router.push('/teacher');
+        } else if (role === 'student') {
           router.push('/board/algebra');
         } else {
           router.push('/pending');

@@ -26,7 +26,10 @@ export default function PendingPage() {
         const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
         if (userDoc.exists()) {
           const currentRole = userDoc.data()?.role;
-          if (currentRole === 'teacher' || currentRole === 'student') {
+          if (currentRole === 'teacher') {
+            router.push('/teacher');
+            return;
+          } else if (currentRole === 'student') {
             router.push('/board/algebra');
             return;
           }
