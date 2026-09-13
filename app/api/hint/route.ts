@@ -25,6 +25,18 @@ export const maxDuration = 60;
 const DAILY_HINT_LIMIT = Number(process.env.HINT_DAILY_LIMIT ?? 20);
 /** NFR-1 성능: 8초 목표. 사진 판독이 붙으므로 하드 타임아웃은 넉넉히 둔다 */
 const AI_TIMEOUT_MS = Number(process.env.HINT_TIMEOUT_MS ?? 20_000);
+/**
+ * 출력 한도. 추론 모델은 이 안에서 추론 토큰까지 소비하므로
+ * 힌트 자체는 120자여도 한도는 넉넉해야 한다. 모자라면 빈 응답이 돌아온다.
+ */
+const MAX_COMPLETION_TOKENS = Number(process.env.OPENAI_MAX_COMPLETION_TOKENS ?? 2000);
+
+/** 기본값만 허용하는 모델이 있어 기본은 '보내지 않음'이다 */
+const OPENAI_TEMPERATURE =
+  process.env.OPENAI_TEMPERATURE === undefined
+    ? undefined
+    : Number(process.env.OPENAI_TEMPERATURE);
+
 /** FR-201: 사진은 최대 3장 */
 const MAX_IMAGES = 3;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -39,9 +51,12 @@ type ErrorCode =
   | 'ai_unavailable'
   | 'ai_timeout';
 
-/** 학생 화면에 그대로 노출되는 문구. 실패해도 교사 질문 경로는 항상 열어 둔다 (NFR-5) */
-function fail(code: ErrorCode, status: number, message: string) {
-  return NextResponse.json({ code, message }, { status });
+/**
+ * 학생 화면에 그대로 노출되는 문구. 실패해도 교사 질문 경로는 항상 열어 둔다 (NFR-5).
+ * `detail`은 교사에게만 넘긴다 — 설정 오류를 학생 화면에 띄우면 혼란스럽고, 서버 구성이 드러난다.
+ */
+function fail(code: ErrorCode, status: number, message: string, detail?: string) {
+  return NextResponse.json({ code, message, ...(detail ? { detail } : {}) }, { status });
 }
 
 /** 일 상한은 한국 날짜 기준으로 끊는다 */
@@ -153,32 +168,28 @@ async function generateHint(
   images: InlineImage[],
   context: string,
 ): Promise<{ text: string; usage: unknown; model: string }> {
-  const geminiKey =
-    process.env.GEMINI_API_KEY ||
-    process.env.Gemini_API_Key ||
-    process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+  // 키 이름은 하나씩만 인정한다. 별칭을 늘리면 "어느 이름으로 넣었더라"가 버그가 된다.
+  // NEXT_PUBLIC_ 접두사는 절대 쓰지 않는다 — 그 이름은 브라우저 번들에 박힌다(PRD 0.2 절대 규칙 1).
+  const openaiKey = process.env.OPENAI_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY;
 
-  const openaiKey =
-    process.env.OPENAI_API_KEY ||
-    process.env.GPT_API_KEY ||
-    process.env.OPENAI_KEY ||
-    (geminiKey?.startsWith('sk-') ? geminiKey : undefined);
-
-  // 1. OpenAI GPT 지원 (sk- 키가 있으면 우선 사용)
+  // 1. OpenAI (기본 경로)
   if (openaiKey) {
     const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
     const url = 'https://api.openai.com/v1/chat/completions';
 
-    const userContent: any[] = [{ type: 'text', text: context }];
-    for (const img of images) {
-      userContent.push({
+    type UserPart =
+      | { type: 'text'; text: string }
+      | { type: 'image_url'; image_url: { url: string; detail: 'high' } };
+
+    const userContent: UserPart[] = [
+      { type: 'text', text: context },
+      // 손글씨·수식을 읽어야 하므로 detail은 high. 대신 토큰 비용이 올라간다(7.2).
+      ...images.map<UserPart>((img) => ({
         type: 'image_url',
-        image_url: {
-          url: `data:${img.mime_type};base64,${img.data}`,
-          detail: 'high',
-        },
-      });
-    }
+        image_url: { url: `data:${img.mime_type};base64,${img.data}`, detail: 'high' },
+      })),
+    ];
 
     let res: Response;
     try {
@@ -195,8 +206,11 @@ async function generateHint(
             { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: userContent },
           ],
-          temperature: 0.4,
-          max_tokens: 512,
+          // max_tokens는 gpt-5 계열이 거부한다. max_completion_tokens는 gpt-4o에서도 통한다.
+          // 추론 모델은 이 한도 안에서 추론 토큰까지 쓰므로 힌트 길이(120자)보다 넉넉히 잡는다.
+          max_completion_tokens: MAX_COMPLETION_TOKENS,
+          // temperature는 기본값만 받는 모델이 있다(gpt-5.6-luna 등). 지정했을 때만 보낸다.
+          ...(OPENAI_TEMPERATURE === undefined ? {} : { temperature: OPENAI_TEMPERATURE }),
         }),
       });
     } catch (error) {
@@ -226,9 +240,9 @@ async function generateHint(
     };
   }
 
-  // 2. Google Gemini 지원
-  if (geminiKey && !geminiKey.startsWith('sk-')) {
-    const model = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+  // 2. Gemini (OPENAI_API_KEY가 없을 때만)
+  if (geminiKey) {
+    const model = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
 
     const contentParts = [...images.map((img) => ({ inline_data: img })), { text: context }];
@@ -420,24 +434,30 @@ export async function POST(req: Request) {
       await releaseHintQuota(uid);
 
       if (error instanceof AiError) {
-        if (error.code === 'ai_missing_key') {
-          return fail('ai_unavailable', 503, error.message);
+        // 설정 오류의 원문은 서버 로그와 교사에게만. 학생에게는 할 수 있는 행동만 알려 준다.
+        console.error('[hint]', error.code, error.message);
+
+        if (error.code === 'ai_timeout') {
+          return fail('ai_timeout', 504, '응답이 늦어지고 있어요. 다시 시도하거나 선생님께 질문해 보세요.');
         }
-        return error.code === 'ai_timeout'
-          ? fail('ai_timeout', 504, '응답이 늦어지고 있어요. 다시 시도하거나 선생님께 질문해 보세요.')
-          : fail('ai_unavailable', 503, error.message || '지금은 힌트를 만들 수 없어요. AI API 설정을 확인해 주세요.');
+        return fail(
+          'ai_unavailable',
+          503,
+          '지금은 힌트를 만들 수 없어요. 선생님께 질문해 보세요.',
+          isTeacher ? error.message : undefined,
+        );
       }
       throw error;
     }
-  } catch (error: any) {
+  } catch (error) {
     if (error instanceof AuthError) {
       return fail('unauthorized', error.status, error.message);
     }
     if (error instanceof AdminConfigError) {
       console.error('[hint]', error.message);
-      return fail('ai_unavailable', 503, error.message);
+      return fail('ai_unavailable', 503, '서버가 아직 설정되지 않았습니다. 선생님께 알려 주세요.');
     }
     console.error('[hint] unexpected error', error);
-    return fail('ai_unavailable', 500, error?.message || '지금은 힌트를 만들 수 없어요. 선생님께 질문해 보세요.');
+    return fail('ai_unavailable', 500, '지금은 힌트를 만들 수 없어요. 선생님께 질문해 보세요.');
   }
 }
