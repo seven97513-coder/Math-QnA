@@ -141,7 +141,7 @@ async function loadPriorHints(questionId: string): Promise<PriorHint[]> {
 }
 
 class GeminiError extends Error {
-  constructor(readonly code: 'ai_unavailable' | 'ai_timeout') {
+  constructor(readonly code: 'ai_unavailable' | 'ai_timeout' | 'ai_missing_key') {
     super(code);
   }
 }
@@ -151,7 +151,10 @@ async function generateHint(
   context: string,
 ): Promise<{ text: string; usage: unknown }> {
   const apiKey = process.env.GEMINI_API_KEY;
-  const model = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+  if (!apiKey) {
+    throw new GeminiError('ai_missing_key');
+  }
+  const model = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
   const contentParts = [...images.map((img) => ({ inline_data: img })), { text: context }];
@@ -338,9 +341,12 @@ export async function POST(req: Request) {
       await releaseHintQuota(uid);
 
       if (error instanceof GeminiError) {
+        if (error.code === 'ai_missing_key') {
+          return fail('ai_unavailable', 503, 'GEMINI_API_KEY 환경변수가 등록되지 않았습니다. Google AI Studio에서 무료 API 키를 발급받아 설정해 주세요.');
+        }
         return error.code === 'ai_timeout'
           ? fail('ai_timeout', 504, '응답이 늦어지고 있어요. 다시 시도하거나 선생님께 질문해 보세요.')
-          : fail('ai_unavailable', 503, '지금은 힌트를 만들 수 없어요. 선생님께 질문해 보세요.');
+          : fail('ai_unavailable', 503, '지금은 힌트를 만들 수 없어요. Gemini API 설정을 확인해 주세요.');
       }
       throw error;
     }
@@ -350,7 +356,7 @@ export async function POST(req: Request) {
     }
     if (error instanceof AdminConfigError) {
       console.error('[hint]', error.message);
-      return fail('ai_unavailable', 503, '서버가 아직 설정되지 않았습니다. 선생님께 알려 주세요.');
+      return fail('ai_unavailable', 503, error.message);
     }
     console.error('[hint] unexpected error', error);
     return fail('ai_unavailable', 500, '지금은 힌트를 만들 수 없어요. 선생님께 질문해 보세요.');

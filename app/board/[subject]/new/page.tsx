@@ -78,11 +78,19 @@ export default function NewQuestionPage({ params }: { params: Promise<{ subject:
       });
 
       // trigger AI hint async
-      fetch('/api/hint', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ questionId: qId })
-      }).catch(console.error);
+      try {
+        const token = await auth.currentUser.getIdToken();
+        fetch('/api/hint', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ questionId: qId, level: 1 })
+        }).catch(console.error);
+      } catch (tokenErr) {
+        console.warn('Failed to get token for initial hint:', tokenErr);
+      }
 
       router.push(`/board/${currentSubject.slug}/${qId}`);
     } catch (error: any) {

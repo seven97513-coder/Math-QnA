@@ -224,6 +224,39 @@ export default function QuestionDetailPage({
     }
   };
 
+  // Student or Teacher requests AI Hint
+  const [requestingHint, setRequestingHint] = useState(false);
+
+  const handleRequestHint = async () => {
+    if (!currentUser) return;
+    setRequestingHint(true);
+    try {
+      const token = await currentUser.getIdToken();
+      const nextLevel = hints.length + 1;
+      const res = await fetch('/api/hint', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          questionId: id,
+          level: nextLevel,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`AI 힌트 안내: ${data.message || '힌트를 생성하지 못했습니다.'}`);
+      }
+    } catch (err: any) {
+      console.error('Hint request error:', err);
+      alert(`오류: ${err.message || '네트워크 오류가 발생했습니다.'}`);
+    } finally {
+      setRequestingHint(false);
+    }
+  };
+
   // Mark resolved
   const handleMarkResolved = async () => {
     try {
@@ -398,10 +431,17 @@ export default function QuestionDetailPage({
         </p>
 
         {hints.length === 0 ? (
-          <div className="bg-white/90 border border-blue-100 rounded-lg p-4 text-center">
-            <p className="text-sm text-gray-600">
-              현재 AI 힌트를 생성 중이거나 등록 대기 중입니다.
+          <div className="bg-white/90 border border-blue-100 rounded-lg p-5 text-center">
+            <p className="text-sm text-gray-700 mb-3">
+              아직 확인된 AI 힌트가 없습니다. 생각할 시간을 가져본 후 1단계 힌트를 요청해 보세요!
             </p>
+            <Button
+              onClick={handleRequestHint}
+              disabled={requestingHint}
+              className="bg-blue-600 hover:bg-blue-700 text-white text-xs h-9 px-5"
+            >
+              {requestingHint ? 'AI 힌트 생성 중...' : '💡 1단계 AI 힌트 요청하기'}
+            </Button>
           </div>
         ) : (
           <div className="space-y-3">
@@ -415,6 +455,25 @@ export default function QuestionDetailPage({
                 </p>
               </div>
             ))}
+
+            {hints.length < 3 ? (
+              <div className="pt-3 border-t border-blue-200/60 flex items-center justify-between flex-wrap gap-2">
+                <span className="text-xs text-blue-800 font-medium">
+                  현재 {hints.length}/3단계 힌트 확인 완료
+                </span>
+                <Button
+                  onClick={handleRequestHint}
+                  disabled={requestingHint}
+                  className="bg-blue-600 hover:bg-blue-700 text-white text-xs h-8 px-4"
+                >
+                  {requestingHint ? 'AI 힌트 생성 중...' : `💡 다음 ${hints.length + 1}단계 힌트 요청하기`}
+                </Button>
+              </div>
+            ) : (
+              <div className="pt-3 border-t border-blue-200/60 text-center text-xs text-blue-800 font-medium">
+                모든 3단계 힌트를 확인하셨습니다. 더 궁금한 점은 아래에서 선생님께 직접 질문해 보세요!
+              </div>
+            )}
           </div>
         )}
       </section>
