@@ -2,15 +2,37 @@ rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
+    function isSignedIn() { return request.auth != null; }
+
+    // 역할 판별은 firestore.rules의 role()과 같은 순서로 맞춘다.
+    // 커스텀 클레임이 우선이고, 없으면 users 문서를 본다.
+    // 여기에 폴백이 없으면 클레임이 아직 안 붙은 교사가 학생 사진을 못 본다.
+    function claimRole() {
+      return ('role' in request.auth.token) ? request.auth.token.role : null;
+    }
+    function docRole() {
+      return firestore.exists(/databases/(default)/documents/users/$(request.auth.uid))
+        ? firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role
+        : null;
+    }
+    function role() {
+      return claimRole() != null ? claimRole() : docRole();
+    }
+    function isTeacher() { return isSignedIn() && role() == 'teacher'; }
+
     function qdoc(qid) {
       return firestore.get(/databases/(default)/documents/questions/$(qid)).data;
     }
+
     match /questions/{uid}/{questionId}/{fileName} {
-      allow read: if request.auth != null
+      // 사진 공개 범위는 질문 문서의 visibility를 그대로 따라간다 (FR-204).
+      // 교사는 전부, 작성자는 본인 것, 그 외 학생은 공개 질문만.
+      allow read: if isSignedIn()
                   && (request.auth.uid == uid
-                      || request.auth.token.role == 'teacher'
+                      || isTeacher()
                       || qdoc(questionId).visibility == 'public');
-      allow write: if request.auth != null
+
+      allow write: if isSignedIn()
                    && request.auth.uid == uid
                    && request.resource.size < 5 * 1024 * 1024
                    && request.resource.contentType.matches('image/.*');

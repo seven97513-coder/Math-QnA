@@ -10,6 +10,7 @@ import {
   type Caller,
   type Role,
 } from '@/lib/firebase/admin';
+import { errorMessage } from '@/lib/utils';
 
 export const maxDuration = 30;
 
@@ -135,8 +136,8 @@ export async function POST(req: Request) {
         }
         try {
           await getAdminAuth().deleteUser(targetUid);
-        } catch (authErr: any) {
-          console.warn('[admin/users] deleteUser warning:', authErr?.message);
+        } catch (authErr) {
+          console.warn('[admin/users] deleteUser warning:', errorMessage(authErr));
         }
         await targetRef.delete();
         await writeAuditLog(actor, 'delete', targetUid, before, { deleted: true });
@@ -148,13 +149,16 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({ ok: true });
-  } catch (error: any) {
+  } catch (error) {
+    // 내부 예외 문구를 그대로 돌려주지 않는다. 서버 구성이 드러난다.
+    if (error instanceof AuthError) {
+      return bad(error.status, error.message);
+    }
+    if (error instanceof AdminConfigError) {
+      console.error('[admin/users]', error.message);
+      return bad(503, '서버에 FIREBASE_SERVICE_ACCOUNT가 설정되지 않았습니다.');
+    }
     console.error('[admin/users] unexpected error', error);
-    const message = error?.message || '처리 중 오류가 발생했습니다.';
-    const status =
-      typeof error?.status === 'number' && error.status >= 400 && error.status < 600
-        ? error.status
-        : 500;
-    return bad(status, message);
+    return bad(500, '처리 중 오류가 발생했습니다.');
   }
 }

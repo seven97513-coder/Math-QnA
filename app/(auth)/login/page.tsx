@@ -6,6 +6,7 @@ import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
+import { errorMessage } from '@/lib/utils';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -52,17 +53,18 @@ export default function LoginPage() {
           router.push('/pending');
         }
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Login failed', error);
-      if (error.code === 'auth/popup-closed-by-user') {
+      const code = error && typeof error === 'object' ? (error as { code?: string }).code : undefined;
+      if (code === 'auth/popup-closed-by-user') {
         return;
       }
-      if (error.code === 'auth/operation-not-allowed') {
+      if (code === 'auth/operation-not-allowed') {
         setErrorMsg('Firebase 콘솔의 Authentication > Sign-in method에서 [Google] 제공업체를 활성화해야 합니다.');
-      } else if (error.code === 'auth/unauthorized-domain') {
+      } else if (code === 'auth/unauthorized-domain') {
         setErrorMsg('Firebase 콘솔 Authentication > Settings > 승인된 도메인에 현재 도메인(localhost)을 추가해야 합니다.');
       } else {
-        setErrorMsg(`로그인에 실패했습니다: ${error.message || error.code || '오류가 발생했습니다.'}`);
+        setErrorMsg(`로그인에 실패했습니다: ${errorMessage(error)}`);
       }
     } finally {
       setLoading(false);

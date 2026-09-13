@@ -55,7 +55,9 @@ service cloud.firestore {
                         || (isOwner(resource.data.authorId)
                             && request.resource.data.authorId == resource.data.authorId));
 
-      allow delete: if isTeacher() || isOwner(resource.data.authorId);
+      // 질문 삭제는 교사만. 학생이 지우면 교사가 답변하려던 질문이 사라지고
+      // 하위 힌트·답변·사진이 고아로 남는다. (PRD FR-602의 작성자 삭제는 제외하기로 결정)
+      allow delete: if isTeacher();
 
       match /hints/{hid} {
         allow read:  if isApproved() && canSee(q(qid));

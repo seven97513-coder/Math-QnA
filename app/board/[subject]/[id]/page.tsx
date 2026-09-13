@@ -16,10 +16,11 @@ import {
   serverTimestamp, 
   Timestamp 
 } from 'firebase/firestore';
-import { ref, getDownloadURL } from 'firebase/storage';
+import { ref, getBlob } from 'firebase/storage';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { SUBJECTS } from '@/lib/constants/subjects';
 import { Button } from '@/components/ui/button';
+import { errorMessage } from '@/lib/utils';
 
 type QuestionData = {
   id: string;
@@ -103,6 +104,46 @@ export default function QuestionDetailPage({
     return () => unsubAuth();
   }, [router]);
 
+  /**
+   * 사진 로딩 (NFR-9 / PRD 7.1)
+   *
+   * getDownloadURL()은 토큰이 박힌 영구 링크를 만든다. 그 링크는 보안 규칙을 우회하므로
+   * 한 번 새어 나가면 로그인하지 않은 사람도 비공개 질문의 사진을 볼 수 있다.
+   * getBlob()은 호출자의 권한으로 내려받으므로 storage.rules가 그대로 적용된다.
+   *
+   * 질문 문서가 실시간으로 갱신될 때마다 다시 받지 않도록 경로 목록이 바뀔 때만 실행한다.
+   */
+  const imagePathsKey = (question?.imagePaths ?? []).join('|');
+
+  useEffect(() => {
+    let cancelled = false;
+    const created: string[] = [];
+
+    (async () => {
+      if (!imagePathsKey) {
+        if (!cancelled) setImageUrls([]);
+        return;
+      }
+      try {
+        const blobs = await Promise.all(
+          imagePathsKey.split('|').map((path) => getBlob(ref(storage, path))),
+        );
+        if (cancelled) return;
+        for (const b of blobs) created.push(URL.createObjectURL(b));
+        setImageUrls(created);
+      } catch (err) {
+        // 권한이 없으면 storage.rules가 막는다. 화면은 사진 없이 계속 동작해야 한다.
+        console.error('사진을 불러오지 못했습니다:', err);
+        if (!cancelled) setImageUrls([]);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      for (const url of created) URL.revokeObjectURL(url);
+    };
+  }, [imagePathsKey]);
+
   // Realtime listener for Question document
   useEffect(() => {
     const unsubQ = onSnapshot(
@@ -117,21 +158,6 @@ export default function QuestionDetailPage({
         const data = { id: snap.id, ...snap.data() } as QuestionData;
         setQuestion(data);
         setLoading(false);
-
-        // Fetch image download URLs
-        if (data.imagePaths && data.imagePaths.length > 0) {
-          try {
-            const urls = await Promise.all(
-              data.imagePaths.map(async (path) => {
-                const imgRef = ref(storage, path);
-                return await getDownloadURL(imgRef);
-              })
-            );
-            setImageUrls(urls);
-          } catch (err) {
-            console.error('Failed to load image URLs:', err);
-          }
-        }
       },
       (error) => {
         console.error('Error fetching question:', error);
@@ -201,9 +227,9 @@ export default function QuestionDetailPage({
 
       setTeacherAnswerText('');
       alert('선생님 답변이 성공적으로 등록되었습니다!');
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to submit teacher answer:', err);
-      alert(`답변 등록 실패: ${err.message || '오류가 발생했습니다.'}`);
+      alert(`답변 등록 실패: ${errorMessage(err)}`);
     } finally {
       setSubmittingAnswer(false);
     }
@@ -218,9 +244,9 @@ export default function QuestionDetailPage({
         updatedAt: serverTimestamp(),
       });
       alert('선생님께 질문이 전달되었습니다. 교사 대기열에 등록되었습니다.');
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to request teacher answer:', err);
-      alert(`요청 실패: ${err.message || '오류가 발생했습니다.'}`);
+      alert(`요청 실패: ${errorMessage(err)}`);
     }
   };
 
@@ -246,7 +272,7 @@ export default function QuestionDetailPage({
       });
 
       const text = await res.text();
-      let data: any = {};
+      let data: { message?: string } = {};
       try {
         data = JSON.parse(text);
       } catch {
@@ -258,9 +284,9 @@ export default function QuestionDetailPage({
       if (!res.ok) {
         alert(`AI 힌트 안내: ${data.message || '지금은 힌트를 생성할 수 없습니다.'}`);
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error('Hint request error:', err);
-      alert(`오류: ${err.message || '네트워크 오류가 발생했습니다.'}`);
+      alert(`오류: ${errorMessage(err, '네트워크 오류가 발생했습니다.')}`);
     } finally {
       setRequestingHint(false);
     }
@@ -275,7 +301,7 @@ export default function QuestionDetailPage({
         updatedAt: serverTimestamp(),
       });
       alert('질문이 해결 완료 처리되었습니다.');
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to resolve question:', err);
     }
   };
@@ -439,6 +465,8 @@ export default function QuestionDetailPage({
           AI 조교는 정답을 바로 알려주지 않고 스스로 생각할 수 있는 유도 질문을 단계별로 제공합니다.
         </p>
 
+        {requestingHint && <HintProgress />}
+
         {hints.length === 0 ? (
           <div className="bg-white/90 border border-blue-100 rounded-lg p-5 text-center">
             <p className="text-sm text-gray-700 mb-3">
@@ -574,6 +602,49 @@ export default function QuestionDetailPage({
           </p>
         )}
       </section>
+    </div>
+  );
+}
+
+/**
+ * 힌트 생성 진행 표시 (PRD 6.1)
+ *
+ * 응답이 10초 안팎 걸린다. 버튼 글씨만 바뀌면 학생은 멈춘 줄 알고 다시 누른다.
+ * 경과에 따라 문구를 바꿔 "지금 무엇을 하는 중인지" 보이게 한다.
+ */
+function HintProgress() {
+  const STAGES = [
+    { after: 0, text: '선생님 조교가 문제를 읽는 중...' },
+    { after: 4, text: '어디서 막혔는지 살펴보는 중...' },
+    { after: 9, text: '가장 짧은 힌트를 고르는 중...' },
+  ];
+
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const started = Date.now();
+    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const stage = [...STAGES].reverse().find((s) => elapsed >= s.after) ?? STAGES[0];
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="mb-3 flex items-center gap-3 rounded-lg border border-blue-200 bg-white/90 p-4"
+    >
+      <span
+        aria-hidden="true"
+        className="size-5 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600"
+      />
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-blue-900">{stage.text}</p>
+        <p className="mt-0.5 text-xs text-gray-500">
+          {elapsed}초 경과 · 보통 10초쯤 걸려요. 창을 닫지 말고 기다려 주세요.
+        </p>
+      </div>
     </div>
   );
 }

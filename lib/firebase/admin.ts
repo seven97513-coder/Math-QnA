@@ -2,6 +2,7 @@ import { cert, getApps, initializeApp, type App } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
+import { errorMessage } from '@/lib/utils';
 import fs from 'fs';
 import path from 'path';
 
@@ -31,7 +32,7 @@ function createApp(): App {
     );
   }
 
-  let json: Record<string, any>;
+  let json: Record<string, unknown>;
   try {
     let raw = serviceAccountString.trim();
 
@@ -50,26 +51,25 @@ function createApp(): App {
       raw = JSON.parse(raw);
     }
     json = typeof raw === 'string' ? JSON.parse(raw) : raw;
-  } catch (e: any) {
-    throw new AdminConfigError(`FIREBASE_SERVICE_ACCOUNT JSON 형식 오류: ${e?.message}`);
+  } catch (e) {
+    throw new AdminConfigError(`FIREBASE_SERVICE_ACCOUNT JSON 형식 오류: ${errorMessage(e)}`);
   }
 
-  let privateKey = json.private_key;
-  if (typeof privateKey === 'string') {
-    privateKey = privateKey.replace(/\\n/g, '\n').replace(/\r/g, '');
-  }
+  const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
 
-  const serviceAccount = {
-    projectId: json.project_id || process.env.FIREBASE_PROJECT_ID || 'math-qna-7eaec',
-    clientEmail: json.client_email,
-    privateKey,
-  };
+  // 프로젝트 ID를 코드에 박아 두지 않는다. 폴백이 있으면 키가 잘못돼도
+  // 엉뚱한 프로젝트로 조용히 붙는다 (client.ts와 같은 이유).
+  const projectId = str(json.project_id) ?? str(process.env.FIREBASE_PROJECT_ID);
+  const clientEmail = str(json.client_email);
+  const privateKey = str(json.private_key)?.replace(/\\n/g, '\n').replace(/\r/g, '');
 
-  if (!serviceAccount.clientEmail || !serviceAccount.privateKey) {
+  if (!projectId || !clientEmail || !privateKey) {
     throw new AdminConfigError(
-      'FIREBASE_SERVICE_ACCOUNT에 client_email 또는 private_key가 누락되었습니다.',
+      'FIREBASE_SERVICE_ACCOUNT에 project_id·client_email·private_key가 모두 있어야 합니다.',
     );
   }
+
+  const serviceAccount = { projectId, clientEmail, privateKey };
 
   return initializeApp({
     credential: cert(serviceAccount),

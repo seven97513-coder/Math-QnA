@@ -1,14 +1,14 @@
 'use client';
 
-import { useState } from 'react';
+import { use, useEffect, useMemo, useState } from 'react';
 import { SUBJECTS, SubjectSlug } from '@/lib/constants/subjects';
 import { Button } from '@/components/ui/button';
 import { compressImage } from '@/lib/image/compress';
 import { db, storage, auth } from '@/lib/firebase/client';
+import { errorMessage } from '@/lib/utils';
 import { ref, uploadBytes } from 'firebase/storage';
 import { collection, doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { notFound, useRouter } from 'next/navigation';
-import { use, useEffect } from 'react';
 import { Camera, Image as ImageIcon, Pencil, Trash2 } from 'lucide-react';
 import ImageEditorModal from '@/components/ImageEditorModal';
 
@@ -21,23 +21,19 @@ export default function NewQuestionPage({ params }: { params: Promise<{ subject:
 
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  // 미리보기 URL은 file에서 파생되는 값이다. effect에서 setState하면 렌더가 한 번 더 돈다.
+  const previewUrl = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
   const [editingFile, setEditingFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [visibility, setVisibility] = useState<'public' | 'private'>('private');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Sync preview url when file changes
+  // 만들어 둔 object URL은 파일이 바뀌거나 화면을 떠날 때 해제한다.
   useEffect(() => {
-    if (!file) {
-      setPreviewUrl(null);
-      return;
-    }
-    const url = URL.createObjectURL(file);
-    setPreviewUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
+    if (!previewUrl) return;
+    return () => URL.revokeObjectURL(previewUrl);
+  }, [previewUrl]);
 
   // FR-201: Mocking user info for now. Should be fetched from users/{uid}
   const authorGrade = 3;
@@ -108,9 +104,9 @@ export default function NewQuestionPage({ params }: { params: Promise<{ subject:
       }
 
       router.push(`/board/${currentSubject.slug}/${qId}`);
-    } catch (error: any) {
+    } catch (error) {
       console.error('Failed to submit question:', error);
-      alert(`질문 등록에 실패했습니다: ${error.message || error.code || '오류가 발생했습니다.'}`);
+      alert(`질문 등록에 실패했습니다: ${errorMessage(error)}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -252,10 +248,7 @@ export default function NewQuestionPage({ params }: { params: Promise<{ subject:
                     type="button"
                     size="sm"
                     variant="ghost"
-                    onClick={() => {
-                      setFile(null);
-                      setPreviewUrl(null);
-                    }}
+                    onClick={() => setFile(null)}
                     className="h-8 text-xs text-red-600 hover:bg-red-50 hover:text-red-700"
                   >
                     <Trash2 className="w-3.5 h-3.5 mr-1" /> 삭제

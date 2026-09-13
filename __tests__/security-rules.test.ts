@@ -7,7 +7,7 @@ import {
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { afterAll, beforeAll, beforeEach, describe, it } from 'vitest';
-import { doc, getDoc, setDoc, updateDoc, collection, getDocs, query, where } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, query, where } from 'firebase/firestore';
 import { ref, getBytes, uploadString } from 'firebase/storage';
 
 let testEnv: RulesTestEnvironment;
@@ -253,6 +253,41 @@ describe('Security Rules', () => {
     );
   });
 
+  // --- 사진 접근 (교사는 전부, 학생은 본인 것과 공개글만) ---
+
+  it('클레임 없이 users 문서만 teacher인 교사도 학생의 비공개 사진을 볼 수 있다', async () => {
+    // 승인 경로를 거치지 않아 커스텀 클레임이 아직 없는 교사 계정.
+    // storage.rules가 클레임만 보면 이 교사는 학생 사진을 전혀 못 본다.
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'users', 'docTeacher'), {
+        uid: 'docTeacher',
+        role: 'teacher',
+      });
+    });
+
+    const teacher = testEnv.authenticatedContext('docTeacher');
+    const fileRef = ref(teacher.storage(), 'questions/studentB/q_private_b/test.jpg');
+    await assertSucceeds(getBytes(fileRef));
+  });
+
+  it('학생 A는 학생 B의 비공개 사진을 여전히 볼 수 없다', async () => {
+    const alice = testEnv.authenticatedContext('docStudent');
+    const fileRef = ref(alice.storage(), 'questions/studentB/q_private_b/test.jpg');
+    await assertFails(getBytes(fileRef));
+  });
+
+  // --- 삭제 권한 ---
+
+  it('학생은 자기 질문도 삭제할 수 없다', async () => {
+    const student = testEnv.authenticatedContext('studentB', { role: 'student' });
+    await assertFails(deleteDoc(doc(student.firestore(), 'questions', 'q_public_b')));
+  });
+
+  it('교사는 학생 질문을 삭제할 수 있다', async () => {
+    const teacher = testEnv.authenticatedContext('teacher1', { role: 'teacher' });
+    await assertSucceeds(deleteDoc(doc(teacher.firestore(), 'questions', 'q_public_b')));
+  });
+
   it('학생이 stats 문서를 읽으면 거부된다', async () => {
     const alice = testEnv.authenticatedContext('studentA', { role: 'student' });
     const db = alice.firestore();
@@ -278,11 +313,12 @@ describe('Security Rules', () => {
     // Note: this succeeds if file exists, if not it fails with object-not-found, which means permission was granted.
     try {
       await getBytes(fileRef);
-    } catch (e: any) {
-      if (e.code === 'storage/unauthorized') {
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      if (code === 'storage/unauthorized') {
         throw new Error('Teacher should have access, but got unauthorized');
       }
-      if (e.code !== 'storage/object-not-found') throw e;
+      if (code !== 'storage/object-not-found') throw e;
     }
   });
 });
