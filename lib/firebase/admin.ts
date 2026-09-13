@@ -34,7 +34,18 @@ function createApp(): App {
   let json: Record<string, any>;
   try {
     let raw = serviceAccountString.trim();
-    // Vercel 등에 붙여넣을 때 전체가 큰따옴표로 감싸진 경우 unwrap
+
+    // 1. Base64 인코딩된 문자열인 경우 복원
+    if (!raw.startsWith('{') && !raw.startsWith('"')) {
+      try {
+        const decoded = Buffer.from(raw, 'base64').toString('utf8');
+        if (decoded.trim().startsWith('{')) {
+          raw = decoded.trim();
+        }
+      } catch {}
+    }
+
+    // 2. 전체가 큰따옴표로 감싸진 경우 unwrap
     if (raw.startsWith('"') && raw.endsWith('"')) {
       raw = JSON.parse(raw);
     }
