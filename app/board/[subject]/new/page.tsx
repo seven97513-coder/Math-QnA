@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { compressImage } from '@/lib/image/compress';
 import { db, storage, auth } from '@/lib/firebase/client';
 import { ref, uploadBytes } from 'firebase/storage';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { notFound, useRouter } from 'next/navigation';
 import { use } from 'react';
 
@@ -44,7 +44,7 @@ export default function NewQuestionPage({ params }: { params: Promise<{ subject:
     
     setIsSubmitting(true);
     try {
-      const qRef = doc(db, 'questions');
+      const qRef = doc(collection(db, 'questions'));
       const qId = qRef.id;
       const uid = auth.currentUser.uid;
       
@@ -85,9 +85,9 @@ export default function NewQuestionPage({ params }: { params: Promise<{ subject:
       }).catch(console.error);
 
       router.push(`/board/${currentSubject.slug}/${qId}`);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to submit question:', error);
-      alert('질문 등록에 실패했습니다.');
+      alert(`질문 등록에 실패했습니다: ${error.message || error.code || '오류가 발생했습니다.'}`);
     } finally {
       setIsSubmitting(false);
     }
