@@ -21,8 +21,10 @@ export default function LoginPage() {
       
       const result = await signInWithPopup(auth, provider);
       const user = result.user;
-      
       if (user) {
+        const idTokenResult = await user.getIdTokenResult(true);
+        let role = idTokenResult.claims.role as string | undefined;
+
         try {
           const userDocRef = doc(db, 'users', user.uid);
           const userSnap = await getDoc(userDocRef);
@@ -35,18 +37,14 @@ export default function LoginPage() {
               role: 'pending',
               createdAt: serverTimestamp(),
             });
+          } else {
+            role = role || userSnap.data()?.role;
           }
         } catch (dbErr) {
           console.warn('User doc sync error:', dbErr);
         }
 
-        // Force token refresh to get custom claims (role)
-        const idTokenResult = await user.getIdTokenResult(true);
-        const role = idTokenResult.claims.role;
-        
-        if (role === 'teacher') {
-          router.push('/teacher');
-        } else if (role === 'student') {
+        if (role === 'teacher' || role === 'student') {
           router.push('/board/algebra');
         } else {
           router.push('/pending');

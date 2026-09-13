@@ -3,7 +3,16 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function isSignedIn()  { return request.auth != null; }
-    function role()        { return request.auth.token.role; }
+    function userDocRole() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : null;
+    }
+    function role() {
+      return request.auth.token.role != null
+        ? request.auth.token.role
+        : userDocRole();
+    }
     function isTeacher()   { return isSignedIn() && role() == 'teacher'; }
     function isApproved()  { return isSignedIn() && (role() == 'student' || role() == 'teacher'); }
     function isOwner(uid)  { return isSignedIn() && request.auth.uid == uid; }
