@@ -140,58 +140,132 @@ async function loadPriorHints(questionId: string): Promise<PriorHint[]> {
   }));
 }
 
-class GeminiError extends Error {
-  constructor(readonly code: 'ai_unavailable' | 'ai_timeout' | 'ai_missing_key') {
-    super(code);
+class AiError extends Error {
+  constructor(
+    readonly code: 'ai_unavailable' | 'ai_timeout' | 'ai_missing_key',
+    message?: string,
+  ) {
+    super(message || code);
   }
 }
 
 async function generateHint(
   images: InlineImage[],
   context: string,
-): Promise<{ text: string; usage: unknown }> {
-  const apiKey =
+): Promise<{ text: string; usage: unknown; model: string }> {
+  const geminiKey =
     process.env.GEMINI_API_KEY ||
     process.env.Gemini_API_Key ||
     process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new GeminiError('ai_missing_key');
-  }
-  const model = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-  const contentParts = [...images.map((img) => ({ inline_data: img })), { text: context }];
+  const openaiKey =
+    process.env.OPENAI_API_KEY ||
+    process.env.GPT_API_KEY ||
+    process.env.OPENAI_KEY ||
+    (geminiKey?.startsWith('sk-') ? geminiKey : undefined);
 
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: AbortSignal.timeout(AI_TIMEOUT_MS),
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: [{ role: 'user', parts: contentParts }],
-        generationConfig: { temperature: 0.4, maxOutputTokens: 512 },
-      }),
-    });
-  } catch (error) {
-    if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
-      throw new GeminiError('ai_timeout');
+  // 1. OpenAI GPT 지원 (sk- 키가 있으면 우선 사용)
+  if (openaiKey) {
+    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    const url = 'https://api.openai.com/v1/chat/completions';
+
+    const userContent: any[] = [{ type: 'text', text: context }];
+    for (const img of images) {
+      userContent.push({
+        type: 'image_url',
+        image_url: {
+          url: `data:${img.mime_type};base64,${img.data}`,
+          detail: 'high',
+        },
+      });
     }
-    throw new GeminiError('ai_unavailable');
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${openaiKey}`,
+        },
+        signal: AbortSignal.timeout(AI_TIMEOUT_MS),
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: userContent },
+          ],
+          temperature: 0.4,
+          max_tokens: 512,
+        }),
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+        throw new AiError('ai_timeout', 'OpenAI 응답 시간이 초과되었습니다.');
+      }
+      throw new AiError('ai_unavailable', 'OpenAI 서버에 연결할 수 없습니다.');
+    }
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.error('[hint] openai error', res.status, errText);
+      if (res.status === 401) {
+        throw new AiError('ai_missing_key', 'OpenAI API 키가 유효하지 않습니다. Vercel 환경변수(OPENAI_API_KEY)를 확인해주세요.');
+      }
+      if (res.status === 429) {
+        throw new AiError('ai_unavailable', 'OpenAI API 크레딧 또는 분당 사용량 한도가 초과되었습니다.');
+      }
+      throw new AiError('ai_unavailable', `OpenAI API 오류 (${res.status}): ${errText.slice(0, 100)}`);
+    }
+
+    const data = await res.json();
+    return {
+      text: (data.choices?.[0]?.message?.content ?? '').trim(),
+      usage: data.usage,
+      model,
+    };
   }
 
-  if (!res.ok) {
-    // 429는 쿼터 초과. 학생에게는 교사 질문 경로를 안내한다 (0.1 모델 설정)
-    console.error('[hint] gemini error', res.status, await res.text().catch(() => ''));
-    throw new GeminiError('ai_unavailable');
+  // 2. Google Gemini 지원
+  if (geminiKey && !geminiKey.startsWith('sk-')) {
+    const model = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
+
+    const contentParts = [...images.map((img) => ({ inline_data: img })), { text: context }];
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(AI_TIMEOUT_MS),
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+          contents: [{ role: 'user', parts: contentParts }],
+          generationConfig: { temperature: 0.4, maxOutputTokens: 512 },
+        }),
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+        throw new AiError('ai_timeout', 'Gemini 응답 시간이 초과되었습니다.');
+      }
+      throw new AiError('ai_unavailable', 'Gemini 서버에 연결할 수 없습니다.');
+    }
+
+    if (!res.ok) {
+      console.error('[hint] gemini error', res.status, await res.text().catch(() => ''));
+      throw new AiError('ai_unavailable', 'Gemini API 호출에 실패했습니다.');
+    }
+
+    const data = await res.json();
+    return {
+      text: (data.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim(),
+      usage: data.usageMetadata,
+      model,
+    };
   }
 
-  const data = await res.json();
-  return {
-    text: (data.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim(),
-    usage: data.usageMetadata,
-  };
+  throw new AiError('ai_missing_key', 'OPENAI_API_KEY 또는 GEMINI_API_KEY 환경변수가 설정되지 않았습니다.');
 }
 
 export async function POST(req: Request) {
@@ -271,7 +345,7 @@ export async function POST(req: Request) {
           : '첨부 사진을 읽지 못했습니다. 판독 불가로 처리하세요.',
       ].join('\n');
 
-      let { text, usage } = await generateHint(images, context);
+      let { text, usage, model: usedModel } = await generateHint(images, context);
       let violation = checkHint(text);
 
       // FR-302: 위반 시 1회 재생성
@@ -283,6 +357,7 @@ export async function POST(req: Request) {
         );
         text = retry.text;
         usage = retry.usage;
+        usedModel = retry.model;
         violation = checkHint(text);
       }
 
@@ -299,6 +374,7 @@ export async function POST(req: Request) {
         violation,
         usedToday: quota.used,
         usage,
+        model: usedModel,
       });
 
       // FR-301 되묻기·재촬영은 힌트가 아니다. 저장하지 않고 레벨도 소모하지 않는다.
@@ -319,7 +395,7 @@ export async function POST(req: Request) {
         tx.set(hintRef, {
           level,
           content: finalHint,
-          model: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
+          model: usedModel || 'gpt-4o-mini',
           createdAt: FieldValue.serverTimestamp(),
           helpful: null,
         });
@@ -343,17 +419,17 @@ export async function POST(req: Request) {
       // AI 호출이 실패했으면 선점한 상한을 돌려준다
       await releaseHintQuota(uid);
 
-      if (error instanceof GeminiError) {
+      if (error instanceof AiError) {
         if (error.code === 'ai_missing_key') {
-          return fail('ai_unavailable', 503, 'GEMINI_API_KEY 환경변수가 등록되지 않았습니다. Google AI Studio에서 무료 API 키를 발급받아 설정해 주세요.');
+          return fail('ai_unavailable', 503, error.message);
         }
         return error.code === 'ai_timeout'
           ? fail('ai_timeout', 504, '응답이 늦어지고 있어요. 다시 시도하거나 선생님께 질문해 보세요.')
-          : fail('ai_unavailable', 503, '지금은 힌트를 만들 수 없어요. Gemini API 설정을 확인해 주세요.');
+          : fail('ai_unavailable', 503, error.message || '지금은 힌트를 만들 수 없어요. AI API 설정을 확인해 주세요.');
       }
       throw error;
     }
-  } catch (error) {
+  } catch (error: any) {
     if (error instanceof AuthError) {
       return fail('unauthorized', error.status, error.message);
     }
@@ -362,6 +438,6 @@ export async function POST(req: Request) {
       return fail('ai_unavailable', 503, error.message);
     }
     console.error('[hint] unexpected error', error);
-    return fail('ai_unavailable', 500, '지금은 힌트를 만들 수 없어요. 선생님께 질문해 보세요.');
+    return fail('ai_unavailable', 500, error?.message || '지금은 힌트를 만들 수 없어요. 선생님께 질문해 보세요.');
   }
 }
