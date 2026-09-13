@@ -2,9 +2,9 @@
   "name": "math-qna",
   "version": "0.1.0",
   "private": true,
-  "//engines": "firebase-admin v14는 Node 22 이상을 요구한다. 선언하지 않으면 Vercel이 기본 버전으로 빌드해 Admin SDK를 import하는 라우트가 통째로 500이 된다.",
+  "//engines": "firebase-admin v14는 Node 22 이상을 요구한다. 범위(>=22)로 두면 Vercel이 어떤 minor로 해석할지 불확실하고, require(ESM)는 22.12+ 에서만 동작하므로 메이저를 고정한다.",
   "engines": {
-    "node": ">=22"
+    "node": "24.x"
   },
   "scripts": {
     "dev": "next dev",
