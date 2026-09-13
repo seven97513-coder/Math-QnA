@@ -245,9 +245,18 @@ export default function QuestionDetailPage({
         }),
       });
 
-      const data = await res.json();
+      const text = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(
+          `서버 응답 오류 (${res.status}): ${text.slice(0, 100) || '서버에서 응답을 생성하지 못했습니다. Vercel 환경변수(Base64) 설정을 확인해주세요.'}`
+        );
+      }
+
       if (!res.ok) {
-        alert(`AI 힌트 안내: ${data.message || '힌트를 생성하지 못했습니다.'}`);
+        alert(`AI 힌트 안내: ${data.message || '지금은 힌트를 생성할 수 없습니다.'}`);
       }
     } catch (err: any) {
       console.error('Hint request error:', err);

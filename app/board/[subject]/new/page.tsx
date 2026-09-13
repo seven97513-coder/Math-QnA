@@ -8,7 +8,9 @@ import { db, storage, auth } from '@/lib/firebase/client';
 import { ref, uploadBytes } from 'firebase/storage';
 import { collection, doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { notFound, useRouter } from 'next/navigation';
-import { use } from 'react';
+import { use, useEffect } from 'react';
+import { Camera, Image as ImageIcon, Pencil, Trash2 } from 'lucide-react';
+import ImageEditorModal from '@/components/ImageEditorModal';
 
 export default function NewQuestionPage({ params }: { params: Promise<{ subject: string }> }) {
   const resolvedParams = use(params);
@@ -19,10 +21,23 @@ export default function NewQuestionPage({ params }: { params: Promise<{ subject:
 
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [editingFile, setEditingFile] = useState<File | null>(null);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [visibility, setVisibility] = useState<'public' | 'private'>('private');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Sync preview url when file changes
+  useEffect(() => {
+    if (!file) {
+      setPreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
 
   // FR-201: Mocking user info for now. Should be fetched from users/{uid}
   const authorGrade = 3;
@@ -166,14 +181,89 @@ export default function NewQuestionPage({ params }: { params: Promise<{ subject:
         </div>
 
         <div>
-          <label className="block text-sm font-medium mb-1">사진 첨부 (최소 1장)</label>
-          <input 
-            type="file" 
-            accept="image/*" 
-            capture="environment"
-            onChange={e => setFile(e.target.files?.[0] || null)}
-            className="w-full border p-2 rounded"
-          />
+          <label className="block text-sm font-medium mb-1">
+            사진 첨부 <span className="text-red-500">*</span> (촬영 또는 앨범 파일)
+          </label>
+
+          {!file ? (
+            <div className="grid grid-cols-2 gap-3 mt-1">
+              <label className="flex flex-col items-center justify-center p-4 border-2 border-dashed border-neutral-300 hover:border-blue-500 bg-neutral-50 hover:bg-blue-50/40 rounded-xl cursor-pointer transition">
+                <Camera className="w-7 h-7 text-blue-600 mb-1" />
+                <span className="text-sm font-semibold text-neutral-800">직접 촬영하기</span>
+                <span className="text-xs text-neutral-500">카메라 실행</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={(e) => {
+                    const selected = e.target.files?.[0];
+                    if (selected) {
+                      setFile(selected);
+                      setEditingFile(selected); // Automatically open editor for quick adjustment
+                    }
+                  }}
+                />
+              </label>
+
+              <label className="flex flex-col items-center justify-center p-4 border-2 border-dashed border-neutral-300 hover:border-blue-500 bg-neutral-50 hover:bg-blue-50/40 rounded-xl cursor-pointer transition">
+                <ImageIcon className="w-7 h-7 text-green-600 mb-1" />
+                <span className="text-sm font-semibold text-neutral-800">앨범 / 파일 선택</span>
+                <span className="text-xs text-neutral-500">갤러리 사진 불러오기</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const selected = e.target.files?.[0];
+                    if (selected) {
+                      setFile(selected);
+                      setEditingFile(selected); // Automatically open editor for quick adjustment
+                    }
+                  }}
+                />
+              </label>
+            </div>
+          ) : (
+            <div className="relative mt-2 p-3 border rounded-xl bg-neutral-50 flex items-center gap-3">
+              {previewUrl && (
+                <img
+                  src={previewUrl}
+                  alt="첨부된 문제 사진"
+                  className="w-20 h-20 object-cover rounded-lg border shadow-sm"
+                />
+              )}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium truncate text-neutral-800">{file.name}</p>
+                <p className="text-xs text-neutral-500 mt-0.5">
+                  {(file.size / (1024 * 1024)).toFixed(2)} MB
+                </p>
+                <div className="flex gap-2 mt-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setEditingFile(file)}
+                    className="h-8 text-xs flex items-center gap-1 text-blue-600 border-blue-200 hover:bg-blue-50"
+                  >
+                    <Pencil className="w-3.5 h-3.5" /> 사진 편집 (회전/자르기/표시)
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setFile(null);
+                      setPreviewUrl(null);
+                    }}
+                    className="h-8 text-xs text-red-600 hover:bg-red-50 hover:text-red-700"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 mr-1" /> 삭제
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         <div>
@@ -214,11 +304,23 @@ export default function NewQuestionPage({ params }: { params: Promise<{ subject:
         <Button 
           type="submit" 
           disabled={!isValid || isSubmitting} 
-          className="w-full h-14 text-lg"
+          className="w-full h-14 text-lg font-bold"
         >
           {isSubmitting ? '업로드 중...' : '질문 등록'}
         </Button>
       </form>
+
+      {/* Image Editor Modal */}
+      {editingFile && (
+        <ImageEditorModal
+          file={editingFile}
+          onSave={(edited) => {
+            setFile(edited);
+            setEditingFile(null);
+          }}
+          onCancel={() => setEditingFile(null)}
+        />
+      )}
     </div>
   );
 }

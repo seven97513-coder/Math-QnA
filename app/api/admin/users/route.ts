@@ -13,7 +13,7 @@ import {
 
 export const maxDuration = 30;
 
-type Action = 'approve' | 'setRole' | 'block' | 'unblock';
+type Action = 'approve' | 'setRole' | 'block' | 'unblock' | 'delete';
 
 function bad(status: number, message: string) {
   return NextResponse.json({ message }, { status });
@@ -127,6 +127,19 @@ export async function POST(req: Request) {
           { isBlocked: before.isBlocked === true },
           { isBlocked },
         );
+        break;
+      }
+      case 'delete': {
+        if (targetUid === actor.uid) {
+          return bad(400, '본인 계정은 삭제할 수 없습니다.');
+        }
+        try {
+          await getAdminAuth().deleteUser(targetUid);
+        } catch (authErr: any) {
+          console.warn('[admin/users] deleteUser warning:', authErr?.message);
+        }
+        await targetRef.delete();
+        await writeAuditLog(actor, 'delete', targetUid, before, { deleted: true });
         break;
       }
 

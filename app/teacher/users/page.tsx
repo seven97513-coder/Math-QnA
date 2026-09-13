@@ -130,6 +130,11 @@ export default function TeacherUsersPage() {
                     onApprove={(classNo, studentNo) =>
                       run(u.uid, { action: 'approve', classNo, studentNo })
                     }
+                    onDelete={() => {
+                      if (confirm(`'${displayNameOf(u)}' 승인 대기 계정을 삭제(거절)하시겠습니까?`)) {
+                        run(u.uid, { action: 'delete' });
+                      }
+                    }}
                   />
                 ))}
               </ul>
@@ -165,14 +170,20 @@ export default function TeacherUsersPage() {
                     </p>
                   </div>
 
-                  <Button
-                    variant={u.isBlocked ? 'outline' : 'destructive'}
-                    disabled={busyUid === u.uid}
-                    onClick={() => run(u.uid, { action: u.isBlocked ? 'unblock' : 'block' })}
-                    className="h-11 min-w-[88px] px-4"
-                  >
-                    {u.isBlocked ? '차단 해제' : '차단'}
-                  </Button>
+                  {u.uid !== auth.currentUser?.uid && (
+                    <Button
+                      variant="destructive"
+                      disabled={busyUid === u.uid}
+                      onClick={() => {
+                        if (confirm(`'${displayNameOf(u)}' 계정을 정말 삭제하시겠습니까?\nFirestore 문서와 인증 정보가 완전히 삭제됩니다.`)) {
+                          run(u.uid, { action: 'delete' });
+                        }
+                      }}
+                      className="h-11 min-w-[80px] px-3 bg-red-600 hover:bg-red-700 text-white"
+                    >
+                      {busyUid === u.uid ? '삭제 중...' : '계정 삭제'}
+                    </Button>
+                  )}
                 </li>
               ))}
             </ul>
@@ -187,10 +198,12 @@ function PendingCard({
   user,
   busy,
   onApprove,
+  onDelete,
 }: {
   user: UserRow;
   busy: boolean;
   onApprove: (classNo: number, studentNo: number) => void;
+  onDelete: () => void;
 }) {
   const [classNo, setClassNo] = useState<number | ''>('');
   const [studentNo, setStudentNo] = useState<number | ''>('');
@@ -237,9 +250,18 @@ function PendingCard({
         <Button
           disabled={busy || classNo === '' || studentNo === ''}
           onClick={() => onApprove(Number(classNo), Number(studentNo))}
-          className="h-11 min-w-[88px] px-4"
+          className="h-11 min-w-[80px] px-4"
         >
           {busy ? '처리 중...' : '승인'}
+        </Button>
+
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={onDelete}
+          className="h-11 min-w-[70px] px-3 text-red-600 border-red-200 hover:bg-red-50"
+        >
+          삭제
         </Button>
       </div>
     </li>
