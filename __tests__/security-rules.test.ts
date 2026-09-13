@@ -49,6 +49,22 @@ beforeEach(async () => {
       totalQuestions: 10,
     });
 
+    // 커스텀 클레임이 없는 사용자들. 역할은 users 문서로만 판별된다.
+    await setDoc(doc(db, 'users', 'docStudent'), { uid: 'docStudent', role: 'student' });
+    await setDoc(doc(db, 'users', 'docPending'), { uid: 'docPending', role: 'pending' });
+    await setDoc(doc(db, 'users', 'docBlocked'), {
+      uid: 'docBlocked',
+      role: 'student',
+      isBlocked: true,
+    });
+
+    // NFR-10 감사 로그 (서버 라우트만 기록한다)
+    await setDoc(doc(db, 'auditLogs', 'log1'), {
+      actorUid: 'teacher1',
+      action: 'approve',
+      targetUid: 'docStudent',
+    });
+
     // 사진 픽스처. storage.rules는 질문 문서의 visibility를 조회해 판단하므로
     // 파일이 실제로 존재해야 allow/deny를 구분해 검증할 수 있다.
     const storage = context.storage();
@@ -158,6 +174,83 @@ describe('Security Rules', () => {
     const alice = testEnv.authenticatedContext('studentA', { role: 'student' });
     const db = alice.firestore();
     await assertFails(getDoc(doc(db, 'users', 'studentB', 'usage', '20260913')));
+  });
+
+  // --- 역할 판별 (커스텀 클레임 없이 users 문서로만) ---
+
+  const validQuestion = (uid: string) => ({
+    authorId: uid,
+    authorGrade: 3,
+    authorClass: 12,
+    authorNo: 1,
+    authorName: '김준형',
+    subject: 'algebra',
+    title: '대수 문제 질문',
+    body: '처음 시작을 잘 모르겠어요',
+    imagePaths: [`questions/${uid}/q_new/img1.jpg`],
+    visibility: 'private' as const,
+  });
+
+  it('승인 대기(pending) 사용자는 질문을 만들 수 없다', async () => {
+    const pending = testEnv.authenticatedContext('docPending');
+    const db = pending.firestore();
+    await assertFails(setDoc(doc(db, 'questions', 'q_pending'), validQuestion('docPending')));
+  });
+
+  it('users 문서의 role이 student면 클레임 없이도 질문을 만들 수 있다', async () => {
+    const student = testEnv.authenticatedContext('docStudent');
+    const db = student.firestore();
+    await assertSucceeds(setDoc(doc(db, 'questions', 'q_doc'), validQuestion('docStudent')));
+  });
+
+  it('학생이 자기 users 문서의 role을 teacher로 바꾸면 거부된다', async () => {
+    const student = testEnv.authenticatedContext('docStudent');
+    const db = student.firestore();
+    // 이름 같은 프로필 수정은 허용
+    await assertSucceeds(updateDoc(doc(db, 'users', 'docStudent'), { name: '새 이름' }));
+    // 역할 승격은 거부
+    await assertFails(updateDoc(doc(db, 'users', 'docStudent'), { role: 'teacher' }));
+  });
+
+  it('최초 사용자 문서를 teacher로 생성하면 거부된다', async () => {
+    const newbie = testEnv.authenticatedContext('newUser');
+    const db = newbie.firestore();
+    await assertFails(setDoc(doc(db, 'users', 'newUser'), { uid: 'newUser', role: 'teacher' }));
+    await assertSucceeds(setDoc(doc(db, 'users', 'newUser'), { uid: 'newUser', role: 'pending' }));
+  });
+
+  it('차단된 사용자는 질문을 만들 수 없다 (FR-103)', async () => {
+    const blocked = testEnv.authenticatedContext('docBlocked');
+    const db = blocked.firestore();
+    await assertFails(setDoc(doc(db, 'questions', 'q_blocked'), validQuestion('docBlocked')));
+  });
+
+  it('차단은 커스텀 클레임이 student로 남아 있어도 즉시 적용된다 (FR-103)', async () => {
+    // 토큰은 최대 1시간 갱신되지 않으므로, 차단 판정은 users 문서를 봐야 한다
+    const blocked = testEnv.authenticatedContext('docBlocked', { role: 'student' });
+    const db = blocked.firestore();
+    await assertFails(setDoc(doc(db, 'questions', 'q_blocked2'), validQuestion('docBlocked')));
+  });
+
+  it('교사도 클라이언트에서 역할·차단을 바꿀 수 없다 (서버 라우트 전용)', async () => {
+    const teacher = testEnv.authenticatedContext('teacher1', { role: 'teacher' });
+    const db = teacher.firestore();
+    // 프로필 수정은 가능
+    await assertSucceeds(updateDoc(doc(db, 'users', 'docPending'), { name: '홍길동' }));
+    // 승인(역할 변경)과 차단은 Admin SDK로만
+    await assertFails(updateDoc(doc(db, 'users', 'docPending'), { role: 'student' }));
+    await assertFails(updateDoc(doc(db, 'users', 'docStudent'), { isBlocked: true }));
+  });
+
+  it('감사 로그는 교사만 읽고 아무도 쓸 수 없다 (NFR-10)', async () => {
+    const student = testEnv.authenticatedContext('docStudent');
+    await assertFails(getDoc(doc(student.firestore(), 'auditLogs', 'log1')));
+
+    const teacher = testEnv.authenticatedContext('teacher1', { role: 'teacher' });
+    await assertSucceeds(getDoc(doc(teacher.firestore(), 'auditLogs', 'log1')));
+    await assertFails(
+      setDoc(doc(teacher.firestore(), 'auditLogs', 'log2'), { action: 'forged' }),
+    );
   });
 
   it('학생이 stats 문서를 읽으면 거부된다', async () => {

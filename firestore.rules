@@ -3,13 +3,25 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function isSignedIn()  { return request.auth != null; }
-    function userDocRole() {
-      return exists(/databases/$(database)/documents/users/$(request.auth.uid))
-        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
-        : null;
+    function hasUserDoc() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
     }
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function userDocRole() {
+      return hasUserDoc() ? userDoc().role : null;
+    }
+    // FR-103 차단은 즉시 효력이 있어야 한다. 커스텀 클레임은 토큰이 갱신될 때까지
+    // 최대 1시간 남아 있으므로, 차단만은 users 문서를 직접 본다.
+    function isBlocked() {
+      return isSignedIn() && hasUserDoc() && userDoc().get('isBlocked', false) == true;
+    }
+    function canWrite() { return isApproved() && !isBlocked(); }
+    // 커스텀 클레임이 우선, 없으면 users 문서의 role로 넘어간다.
+    // 없는 클레임을 점 표기로 읽으면 평가가 깨지므로 반드시 'in'으로 존재를 먼저 확인한다.
     function role() {
-      return request.auth.token.role != null
+      return ('role' in request.auth.token)
         ? request.auth.token.role
         : userDocRole();
     }
@@ -23,7 +35,7 @@ service cloud.firestore {
     match /questions/{qid} {
       allow read: if isApproved() && canSee(resource.data);
 
-      allow create: if isApproved()
+      allow create: if canWrite()
                     && request.resource.data.authorId == request.auth.uid
                     && request.resource.data.authorGrade == 3
                     && request.resource.data.authorClass is int
@@ -38,9 +50,10 @@ service cloud.firestore {
                     && request.resource.data.imagePaths.size() <= 3
                     && request.resource.data.visibility in ['public', 'private'];
 
-      allow update: if isTeacher()
-                    || (isOwner(resource.data.authorId)
-                        && request.resource.data.authorId == resource.data.authorId);
+      allow update: if !isBlocked()
+                    && (isTeacher()
+                        || (isOwner(resource.data.authorId)
+                            && request.resource.data.authorId == resource.data.authorId));
 
       allow delete: if isTeacher() || isOwner(resource.data.authorId);
 
@@ -51,15 +64,25 @@ service cloud.firestore {
 
       match /answers/{aid} {
         allow read:   if isApproved() && canSee(q(qid));
-        allow create: if isTeacher() || isOwner(q(qid).authorId);
+        allow create: if !isBlocked() && (isTeacher() || isOwner(q(qid).authorId));
         allow update, delete: if isTeacher() || isOwner(resource.data.authorId);
       }
     }
 
     match /users/{uid} {
       allow read:   if isOwner(uid) || isTeacher();
-      allow update: if isOwner(uid) || isTeacher();
-      allow create: if isOwner(uid);
+
+      // role()이 users 문서를 신뢰하므로, 이 문서의 role은 본인이 건드릴 수 없어야 한다.
+      // (여기가 열려 있으면 학생이 스스로 교사가 되어 모든 비공개 질문을 읽는다 — NFR-9 위반)
+      allow create: if isOwner(uid) && request.resource.data.role == 'pending';
+
+      // role·isBlocked는 클라이언트에서 바꿀 수 없다. 교사도 마찬가지다.
+      // 두 값은 커스텀 클레임 동기화와 감사 로그(NFR-10)를 함께 처리하는
+      // 서버 라우트(/api/admin/users)에서 Admin SDK로만 바뀐다.
+      allow update: if (isOwner(uid) || isTeacher())
+                    && request.resource.data.role == resource.data.role
+                    && request.resource.data.get('isBlocked', false)
+                       == resource.data.get('isBlocked', false);
       allow delete: if false;
 
       // NFR-4 일일 AI 호출 카운터. 본인은 남은 횟수를 볼 수 있지만
@@ -77,6 +100,12 @@ service cloud.firestore {
 
     match /stats/{doc} {
       allow read:  if isTeacher();          // 학생은 집계 데이터를 볼 수 없다
+      allow write: if false;
+    }
+
+    // NFR-10 감사: 역할 변경·차단·삭제 기록. 서버 라우트만 남기고 교사만 읽는다.
+    match /auditLogs/{logId} {
+      allow read:  if isTeacher();
       allow write: if false;
     }
   }

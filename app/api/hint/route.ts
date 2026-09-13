@@ -1,7 +1,13 @@
 import { FieldValue } from 'firebase-admin/firestore';
 import { NextResponse } from 'next/server';
 
-import { adminAuth, adminDb, adminStorage } from '@/lib/firebase/admin';
+import {
+  AdminConfigError,
+  AuthError,
+  getAdminDb,
+  getAdminStorage,
+  verifyCaller,
+} from '@/lib/firebase/admin';
 import {
   ASK_PREFIX,
   RETAKE_PREFIX,
@@ -55,9 +61,9 @@ function seoulDateKey(now = new Date()): string {
  * 호출 전에 선점하고, 호출이 실패하면 되돌린다.
  */
 async function reserveHintQuota(uid: string): Promise<{ ok: boolean; used: number }> {
-  const ref = adminDb.collection('users').doc(uid).collection('usage').doc(seoulDateKey());
+  const ref = getAdminDb().collection('users').doc(uid).collection('usage').doc(seoulDateKey());
 
-  return adminDb.runTransaction(async (tx) => {
+  return getAdminDb().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     const used: number = snap.exists ? (snap.data()?.hintCount ?? 0) : 0;
 
@@ -70,7 +76,7 @@ async function reserveHintQuota(uid: string): Promise<{ ok: boolean; used: numbe
 
 async function releaseHintQuota(uid: string): Promise<void> {
   try {
-    await adminDb
+    await getAdminDb()
       .collection('users')
       .doc(uid)
       .collection('usage')
@@ -91,7 +97,7 @@ type InlineImage = { mime_type: string; data: string };
 async function loadImages(imagePaths: unknown): Promise<InlineImage[]> {
   if (!Array.isArray(imagePaths)) return [];
 
-  const bucket = adminStorage.bucket();
+  const bucket = getAdminStorage().bucket();
   const paths = imagePaths.filter((p): p is string => typeof p === 'string').slice(0, MAX_IMAGES);
 
   const loaded = await Promise.all(
@@ -121,7 +127,7 @@ async function loadImages(imagePaths: unknown): Promise<InlineImage[]> {
 type PriorHint = { level: number; content: string };
 
 async function loadPriorHints(questionId: string): Promise<PriorHint[]> {
-  const snap = await adminDb
+  const snap = await getAdminDb()
     .collection('questions')
     .doc(questionId)
     .collection('hints')
@@ -184,14 +190,12 @@ async function generateHint(
 
 export async function POST(req: Request) {
   try {
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader?.startsWith('Bearer ')) {
-      return fail('unauthorized', 401, '로그인이 필요합니다.');
+    const caller = await verifyCaller(req);
+    if (caller.role === 'pending' || caller.isBlocked) {
+      return fail('unauthorized', 403, '아직 승인되지 않은 계정입니다.');
     }
-
-    const decodedToken = await adminAuth.verifyIdToken(authHeader.slice('Bearer '.length));
-    const uid = decodedToken.uid;
-    const isTeacher = decodedToken.role === 'teacher';
+    const uid = caller.uid;
+    const isTeacher = caller.role === 'teacher';
 
     const body = await req.json().catch(() => ({}));
     const questionId: unknown = body.questionId;
@@ -204,7 +208,7 @@ export async function POST(req: Request) {
       return fail('invalid_request', 400, '힌트 단계가 올바르지 않습니다.');
     }
 
-    const qRef = adminDb.collection('questions').doc(questionId);
+    const qRef = getAdminDb().collection('questions').doc(questionId);
     const qDoc = await qRef.get();
     // 존재 자체를 숨긴다: 권한 없음도 404로 답한다 (NFR-9)
     if (!qDoc.exists) return fail('not_found', 404, '질문을 찾을 수 없습니다.');
@@ -305,7 +309,7 @@ export async function POST(req: Request) {
       const finalHint = truncateToTwoSentences(text);
 
       const hintRef = qRef.collection('hints').doc();
-      await adminDb.runTransaction(async (tx) => {
+      await getAdminDb().runTransaction(async (tx) => {
         tx.set(hintRef, {
           level,
           content: finalHint,
@@ -341,6 +345,13 @@ export async function POST(req: Request) {
       throw error;
     }
   } catch (error) {
+    if (error instanceof AuthError) {
+      return fail('unauthorized', error.status, error.message);
+    }
+    if (error instanceof AdminConfigError) {
+      console.error('[hint]', error.message);
+      return fail('ai_unavailable', 503, '서버가 아직 설정되지 않았습니다. 선생님께 알려 주세요.');
+    }
     console.error('[hint] unexpected error', error);
     return fail('ai_unavailable', 500, '지금은 힌트를 만들 수 없어요. 선생님께 질문해 보세요.');
   }
