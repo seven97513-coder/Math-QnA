@@ -27,27 +27,41 @@ function createApp(): App {
 
   if (!serviceAccountString) {
     throw new AdminConfigError(
-      'FIREBASE_SERVICE_ACCOUNT 환경변수가 없습니다. 서버 기능(AI 힌트·승인·알림)을 쓸 수 없습니다.',
+      'FIREBASE_SERVICE_ACCOUNT 환경변수가 비어있습니다. Vercel에서 환경 변수 추가 후 최신 버전으로 Redeploy(재배포)했는지 확인해주세요.',
     );
   }
 
-  let json: Record<string, string>;
+  let json: Record<string, any>;
   try {
-    // Google이 내려주는 키 파일은 snake_case, cert()의 타입은 camelCase다. 명시적으로 옮긴다.
-    json = JSON.parse(serviceAccountString) as Record<string, string>;
-  } catch {
-    throw new AdminConfigError('FIREBASE_SERVICE_ACCOUNT가 올바른 JSON이 아닙니다.');
+    let raw = serviceAccountString.trim();
+    // Vercel 등에 붙여넣을 때 전체가 큰따옴표로 감싸진 경우 unwrap
+    if (raw.startsWith('"') && raw.endsWith('"')) {
+      raw = JSON.parse(raw);
+    }
+    json = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch (e: any) {
+    throw new AdminConfigError(`FIREBASE_SERVICE_ACCOUNT JSON 형식 오류: ${e?.message}`);
+  }
+
+  let privateKey = json.private_key;
+  if (typeof privateKey === 'string') {
+    privateKey = privateKey.replace(/\\n/g, '\n').replace(/\r/g, '');
   }
 
   const serviceAccount = {
-    projectId: json.project_id,
+    projectId: json.project_id || process.env.FIREBASE_PROJECT_ID || 'math-qna-7eaec',
     clientEmail: json.client_email,
-    privateKey: json.private_key?.replace(/\\n/g, '\n'),
+    privateKey,
   };
+
+  if (!serviceAccount.clientEmail || !serviceAccount.privateKey) {
+    throw new AdminConfigError(
+      'FIREBASE_SERVICE_ACCOUNT에 client_email 또는 private_key가 누락되었습니다.',
+    );
+  }
 
   return initializeApp({
     credential: cert(serviceAccount),
-    // getStorage().bucket()은 기본 버킷 이름이 주입돼 있어야 동작한다 (FR-301 사진 판독).
     storageBucket:
       process.env.FIREBASE_STORAGE_BUCKET ?? `${serviceAccount.projectId}.firebasestorage.app`,
   });

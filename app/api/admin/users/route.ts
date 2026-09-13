@@ -135,15 +135,13 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({ ok: true });
-  } catch (error) {
-    if (error instanceof AuthError) {
-      return bad(error.status, error.message);
-    }
-    if (error instanceof AdminConfigError) {
-      console.error('[admin/users]', error.message);
-      return bad(503, '서버에 FIREBASE_SERVICE_ACCOUNT가 설정되지 않았습니다.');
-    }
+  } catch (error: any) {
     console.error('[admin/users] unexpected error', error);
-    return bad(500, '처리 중 오류가 발생했습니다.');
+    const message = error?.message || '처리 중 오류가 발생했습니다.';
+    const status =
+      typeof error?.status === 'number' && error.status >= 400 && error.status < 600
+        ? error.status
+        : 500;
+    return bad(status, message);
   }
 }

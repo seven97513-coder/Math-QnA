@@ -34,8 +34,15 @@ async function callAdmin(body: Record<string, unknown>): Promise<void> {
   });
 
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.message ?? '처리에 실패했습니다.');
+    const text = await res.text();
+    let message = '처리에 실패했습니다.';
+    try {
+      const data = JSON.parse(text);
+      message = data.message || data.error || message;
+    } catch {
+      message = `서버 오류 (${res.status}): ${text.slice(0, 120)}`;
+    }
+    throw new Error(message);
   }
 }
 
