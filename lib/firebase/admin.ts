@@ -2,6 +2,8 @@ import { cert, getApps, initializeApp, type App } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
+import fs from 'fs';
+import path from 'path';
 
 // firebase-admin v14는 네임스페이스 API(admin.apps / admin.auth())를 제공하지 않는다.
 // 서비스별 모듈 진입점만 사용한다.
@@ -10,7 +12,19 @@ import { getStorage } from 'firebase-admin/storage';
 export class AdminConfigError extends Error {}
 
 function createApp(): App {
-  const serviceAccountString = process.env.FIREBASE_SERVICE_ACCOUNT;
+  let serviceAccountString = process.env.FIREBASE_SERVICE_ACCOUNT;
+
+  if (!serviceAccountString) {
+    const localFilePath = path.join(process.cwd(), 'service-account.json');
+    if (fs.existsSync(localFilePath)) {
+      try {
+        serviceAccountString = fs.readFileSync(localFilePath, 'utf-8');
+      } catch (err) {
+        console.warn('Failed to read local service-account.json:', err);
+      }
+    }
+  }
+
   if (!serviceAccountString) {
     throw new AdminConfigError(
       'FIREBASE_SERVICE_ACCOUNT 환경변수가 없습니다. 서버 기능(AI 힌트·승인·알림)을 쓸 수 없습니다.',
@@ -28,7 +42,7 @@ function createApp(): App {
   const serviceAccount = {
     projectId: json.project_id,
     clientEmail: json.client_email,
-    privateKey: json.private_key,
+    privateKey: json.private_key?.replace(/\\n/g, '\n'),
   };
 
   return initializeApp({
