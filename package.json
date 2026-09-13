@@ -2,9 +2,13 @@
   "name": "math-qna",
   "version": "0.1.0",
   "private": true,
-  "//engines": "firebase-admin v14는 Node 22 이상을 요구한다. 범위(>=22)로 두면 Vercel이 어떤 minor로 해석할지 불확실하고, require(ESM)는 22.12+ 에서만 동작하므로 메이저를 고정한다.",
+  "//engines": "firebase-admin v14가 요구하는 Node 버전.",
   "engines": {
     "node": "24.x"
+  },
+  "//overrides": "firebase-admin/auth → jwks-rsa(CommonJS) → jose. jose 6은 ESM 전용(exports에 require 조건이 없음)이라 jwks-rsa의 require('jose')가 ERR_REQUIRE_ESM으로 터진다. Next가 firebase-admin을 기본 external로 두고 네이티브 require로 불러오기 때문에 배포 환경에서 라우트가 통째로 죽는다. jose 5는 CJS 빌드를 제공하고, jwks-rsa가 쓰는 심볼은 importJWK·exportSPKI 둘뿐이라 5로 내려도 안전하다.",
+  "overrides": {
+    "jose": "^5.10.0"
   },
   "scripts": {
     "dev": "next dev",
