@@ -150,7 +150,10 @@ async function generateHint(
   images: InlineImage[],
   context: string,
 ): Promise<{ text: string; usage: unknown }> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey =
+    process.env.GEMINI_API_KEY ||
+    process.env.Gemini_API_Key ||
+    process.env.NEXT_PUBLIC_GEMINI_API_KEY;
   if (!apiKey) {
     throw new GeminiError('ai_missing_key');
   }
